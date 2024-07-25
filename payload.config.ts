@@ -1,27 +1,9 @@
 import path from 'path'
 // import { postgresAdapter } from '@payloadcms/db-postgres'
 import { en } from 'payload/i18n/en'
-import {
-  AlignFeature,
-  BlockquoteFeature,
-  BlocksFeature,
-  BoldFeature,
-  ChecklistFeature,
-  HeadingFeature,
-  IndentFeature,
-  InlineCodeFeature,
-  ItalicFeature,
-  lexicalEditor,
-  LinkFeature,
-  OrderedListFeature,
-  ParagraphFeature,
-  RelationshipFeature,
-  UnorderedListFeature,
-  UploadFeature,
-} from '@payloadcms/richtext-lexical'
-//import { slateEditor } from '@payloadcms/richtext-slate'
-import { mongooseAdapter } from '@payloadcms/db-mongodb'
+import { lexicalEditor } from '@payloadcms/richtext-lexical'
 import { buildConfig } from 'payload'
+import { postgresAdapter } from '@payloadcms/db-postgres'
 import sharp from 'sharp'
 import { fileURLToPath } from 'url'
 
@@ -42,28 +24,124 @@ export default buildConfig({
       fields: [],
     },
     {
-      slug: 'pages',
-      admin: {
-        useAsTitle: 'title',
+      slug: 'posts',
+      hooks: {
+        beforeChange: [
+          ({ data }) => {
+            // Would use a default value but there is another issue I've opened (#7350) with checkbox default values
+            if (data?.active === undefined || data?.active === null) {
+              data.active = true
+            }
+
+            return data
+          },
+        ],
+        afterChange: [
+          async ({ previousDoc, doc, operation, req }) => {
+            console.log('audit hook running...')
+
+            if (operation === 'update') {
+              const { payload } = req
+
+              const isDelete = previousDoc?.active && !doc.active
+
+              let auditType: 'create' | 'update' | 'delete'
+
+              if (isDelete) {
+                auditType = 'delete'
+              } else {
+                auditType = 'update'
+              }
+
+              const strippedDoc = {
+                title: doc.title,
+                contributors: doc.contributors,
+                post: doc.id,
+              }
+
+              console.log('stripped doc', strippedDoc)
+
+              await payload.create({
+                collection: 'post-audits',
+                data: { ...strippedDoc, auditType },
+                overrideAccess: true,
+                user: req.user,
+              })
+
+              console.log('audit hook ran')
+            }
+          },
+        ],
       },
       fields: [
         {
-          name: 'title',
-          type: 'text',
+          type: 'checkbox',
+          name: 'active',
         },
         {
-          name: 'content',
-          type: 'richText',
+          type: 'text',
+          name: 'title',
+          required: true,
+        },
+        {
+          type: 'array',
+          name: 'contributors',
+          minRows: 1,
+          fields: [
+            {
+              type: 'text',
+              name: 'role',
+              required: true,
+            },
+            {
+              type: 'relationship',
+              name: 'user',
+              relationTo: 'users',
+              required: true,
+            },
+          ],
         },
       ],
     },
     {
-      slug: 'media',
-      upload: true,
+      slug: 'post-audits',
       fields: [
         {
-          name: 'text',
           type: 'text',
+          name: 'title',
+          required: true,
+        },
+        {
+          type: 'relationship',
+          relationTo: 'posts',
+          name: 'post',
+          required: true,
+        },
+        {
+          type: 'array',
+          name: 'contributors',
+          fields: [
+            {
+              type: 'text',
+              name: 'role',
+              required: true,
+            },
+            {
+              type: 'relationship',
+              name: 'user',
+              relationTo: 'users',
+              required: true,
+            },
+          ],
+        },
+        {
+          name: 'auditType',
+          type: 'select',
+          options: [
+            { label: 'Create', value: 'create' },
+            { label: 'Update', value: 'update' },
+            { label: 'Delete', value: 'delete' },
+          ],
         },
       ],
     },
@@ -72,13 +150,10 @@ export default buildConfig({
   typescript: {
     outputFile: path.resolve(dirname, 'payload-types.ts'),
   },
-  // db: postgresAdapter({
-  //   pool: {
-  //     connectionString: process.env.POSTGRES_URI || ''
-  //   }
-  // }),
-  db: mongooseAdapter({
-    url: process.env.MONGODB_URI || '',
+  db: postgresAdapter({
+    pool: {
+      connectionString: process.env.POSTGRES_URI || '',
+    },
   }),
 
   /**
